@@ -1,9 +1,21 @@
 import numpy as np
 from PIL import Image
 import pandas as pd
-from sklearn.preprocessing import MinMaxScaler
+from sklearn.preprocessing import MinMaxScaler, StandardScaler, LabelEncoder
 from sklearn.metrics.pairwise import cosine_similarity
-from sklearn.metrics import jaccard_score
+from sklearn.metrics import jaccard_score, r2_score
+from sklearn.model_selection import train_test_split
+from sklearn.linear_model import LinearRegression
+from sklearn.decomposition import PCA
+import warnings
+warnings.filterwarnings('ignore')
+import requests
+from bs4 import BeautifulSoup
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+import time
+
+
 
 # Q1:
 
@@ -199,3 +211,319 @@ if 'CommuteDistance' in df_final.columns:
     print("Correlation between CommuteDistance and YearlyIncome:", correlation)
 else:
     print("Column 'CommuteDistance' not found in dataset")
+
+
+
+
+## --------------  Assignment 3 --------------------- ###
+
+
+def load_house_data():
+    df = pd.read_csv('USA_Housing.csv')
+    print("House Dataset Shape:", df.shape)
+    print("Columns:", df.columns.tolist())
+    return df
+
+def k_fold_cross_validation(X, y, k=5):
+    n = len(X)
+    fold_size = n // k
+    best_beta = None
+    best_r2 = -np.inf
+    results = []
+
+    for i in range(k):
+        start_idx = i * fold_size
+        end_idx = (i + 1) * fold_size if i < k - 1 else n
+
+        test_indices = list(range(start_idx, end_idx))
+        train_indices = list(range(0, start_idx)) + list(range(end_idx, n))
+
+        X_train = X.iloc[train_indices]
+        X_test = X.iloc[test_indices]
+        y_train = y.iloc[train_indices]
+        y_test = y.iloc[test_indices]
+
+        X_train_with_intercept = np.column_stack([np.ones(len(X_train)), X_train])
+        X_test_with_intercept = np.column_stack([np.ones(len(X_test)), X_test])
+
+        beta = np.linalg.inv(X_train_with_intercept.T @ X_train_with_intercept) @ X_train_with_intercept.T @ y_train
+        y_pred = X_test_with_intercept @ beta
+        r2 = r2_score(y_test, y_pred)
+
+        results.append({
+            'fold': i + 1,
+            'beta': beta,
+            'r2_score': r2
+        })
+
+        print(f"Fold {i+1}: R² = {r2:.4f}")
+
+        if r2 > best_r2:
+            best_r2 = r2
+            best_beta = beta
+
+    return results, best_beta, best_r2
+
+def gradient_descent(X, y, learning_rate=0.01, iterations=1000):
+    X_with_intercept = np.column_stack([np.ones(len(X)), X])
+    m, n = X_with_intercept.shape
+    beta = np.zeros(n)
+
+    for i in range(iterations):
+        y_pred = X_with_intercept @ beta
+        cost = np.mean((y_pred - y) ** 2)
+        gradient = (2 / m) * X_with_intercept.T @ (y_pred - y)
+        beta -= learning_rate * gradient
+
+    return beta
+
+def question_1():
+    print("=== QUESTION 1: K-FOLD CROSS VALIDATION ===")
+    df = load_house_data()
+
+    X = df.drop('Price', axis=1)
+    y = df['Price']
+
+    scaler = StandardScaler()
+    X_scaled = pd.DataFrame(scaler.fit_transform(X), columns=X.columns)
+
+    results, best_beta, best_r2 = k_fold_cross_validation(X_scaled, y)
+    print(f"\nBest R² Score: {best_r2:.4f}")
+
+    X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, test_size=0.3, random_state=42)
+
+    X_train_with_intercept = np.column_stack([np.ones(len(X_train)), X_train])
+    X_test_with_intercept = np.column_stack([np.ones(len(X_test)), X_test])
+
+    y_pred_test = X_test_with_intercept @ best_beta
+    final_r2 = r2_score(y_test, y_pred_test)
+
+    print(f"Final Test R² Score: {final_r2:.4f}")
+    return results, best_beta
+
+def question_2():
+    print("\n=== QUESTION 2: GRADIENT DESCENT WITH VALIDATION SET ===")
+    df = load_house_data()
+
+    X = df.drop('Price', axis=1)
+    y = df['Price']
+
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+
+    X_train_val, X_test, y_train_val, y_test = train_test_split(X_scaled, y, test_size=0.3, random_state=42)
+    X_train, X_val, y_train, y_val = train_test_split(X_train_val, y_train_val, test_size=0.2, random_state=42)
+
+    learning_rates = [0.001, 0.01, 0.1, 1]
+    best_lr = None
+    best_val_r2 = -np.inf
+    best_coefficients = None
+
+    for lr in learning_rates:
+        coefficients = gradient_descent(X_train, y_train, lr, 1000)
+
+        X_val_with_intercept = np.column_stack([np.ones(len(X_val)), X_val])
+        X_test_with_intercept = np.column_stack([np.ones(len(X_test)), X_test])
+
+        y_val_pred = X_val_with_intercept @ coefficients
+        y_test_pred = X_test_with_intercept @ coefficients
+
+        val_r2 = r2_score(y_val, y_val_pred)
+        test_r2 = r2_score(y_test, y_test_pred)
+
+        print(f"Learning Rate: {lr}, Validation R²: {val_r2:.4f}, Test R²: {test_r2:.4f}")
+
+        if val_r2 > best_val_r2:
+            best_val_r2 = val_r2
+            best_lr = lr
+            best_coefficients = coefficients
+
+    print(f"\nBest Learning Rate: {best_lr}")
+    print(f"Best Validation R²: {best_val_r2:.4f}")
+
+    return best_coefficients, best_lr
+
+def load_car_data():
+    url = "https://archive.ics.uci.edu/ml/machine-learning-databases/autos/imports-85.data"
+    columns = ["symboling", "normalized_losses", "make", "fuel_type", "aspiration",
+               "num_doors", "body_style", "drive_wheels", "engine_location",
+               "wheel_base", "length", "width", "height", "curb_weight",
+               "engine_type", "num_cylinders", "engine_size", "fuel_system",
+               "bore", "stroke", "compression_ratio", "horsepower", "peak_rpm",
+               "city_mpg", "highway_mpg", "price"]
+
+    df = pd.read_csv(url, names=columns, na_values='?')
+    print("Car Dataset Shape:", df.shape)
+    return df
+
+def preprocess_car_data(df):
+    df = df.dropna(subset=['price'])
+
+    numeric_columns = df.select_dtypes(include=[np.number]).columns
+    categorical_columns = df.select_dtypes(include=['object']).columns
+
+    for col in numeric_columns:
+        if col != 'price':
+            df[col] = df[col].fillna(df[col].median())
+
+    for col in categorical_columns:
+        df[col] = df[col].fillna(df[col].mode()[0])
+
+    door_mapping = {'two': 2, 'four': 4}
+    cylinder_mapping = {'two': 2, 'three': 3, 'four': 4, 'five': 5, 'six': 6, 'eight': 8, 'twelve': 12}
+
+    df['num_doors'] = df['num_doors'].map(door_mapping)
+    df['num_cylinders'] = df['num_cylinders'].map(cylinder_mapping)
+
+    df = pd.get_dummies(df, columns=['body_style', 'drive_wheels'], prefix=['body_style', 'drive_wheels'])
+
+    le = LabelEncoder()
+    for col in ['make', 'aspiration', 'engine_location', 'fuel_type']:
+        df[col] = le.fit_transform(df[col])
+
+    df['fuel_system'] = df['fuel_system'].apply(lambda x: 1 if 'pfi' in str(x).lower() else 0)
+    df['engine_type'] = df['engine_type'].apply(lambda x: 1 if 'ohc' in str(x).lower() else 0)
+
+    return df
+
+def question_3():
+    print("\n=== QUESTION 3: CAR PRICE PREDICTION WITH PREPROCESSING ===")
+    df = load_car_data()
+    df_processed = preprocess_car_data(df)
+
+    print(f"Processed Dataset Shape: {df_processed.shape}")
+
+    X = df_processed.drop('price', axis=1)
+    y = df_processed['price']
+
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+
+    X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, test_size=0.3, random_state=42)
+
+    model = LinearRegression()
+    model.fit(X_train, y_train)
+    y_pred = model.predict(X_test)
+    r2_original = r2_score(y_test, y_pred)
+
+    print(f"Original Model R² Score: {r2_original:.4f}")
+
+    pca = PCA(n_components=0.95)
+    X_train_pca = pca.fit_transform(X_train)
+    X_test_pca = pca.transform(X_test)
+
+    print(f"PCA Components: {pca.n_components_} (from {X.shape[1]} original features)")
+
+    model_pca = LinearRegression()
+    model_pca.fit(X_train_pca, y_train)
+    y_pred_pca = model_pca.predict(X_test_pca)
+    r2_pca = r2_score(y_test, y_pred_pca)
+
+    print(f"PCA Model R² Score: {r2_pca:.4f}")
+
+    if r2_pca > r2_original:
+        print("PCA improved performance!")
+    elif r2_pca < r2_original:
+        print("PCA reduced performance.")
+    else:
+        print("PCA had no significant impact on performance.")
+
+    return r2_original, r2_pca, pca.n_components_
+
+def main():
+    try:
+        results_q1, best_beta = question_1()
+        best_coeffs, best_lr = question_2()
+        r2_orig, r2_pca, n_components = question_3()
+
+        print("\n=== SUMMARY ===")
+        print(f"Q1 - Best K-Fold R²: {max([r['r2_score'] for r in results_q1]):.4f}")
+        print(f"Q2 - Best Learning Rate: {best_lr}")
+        print(f"Q3 - Original R²: {r2_orig:.4f}, PCA R²: {r2_pca:.4f}")
+        print(f"Q3 - Dimensionality Reduction: {n_components} components")
+
+    except FileNotFoundError as e:
+        print(f"Error: Could not find dataset file. {e}")
+        print("Make sure 'USA_Housing.csv' is in your project directory.")
+    except Exception as e:
+        print(f"An error occurred: {e}")
+
+main()
+
+
+
+
+## -------------------------- Assignment 4 ---------------------------------- ####
+
+
+q1
+
+base_url = "https://books.toscrape.com/catalogue/page-{}.html"
+books = []
+
+for page in range(1, 51):
+    url = base_url.format(page)
+    response = requests.get(url)
+    soup = BeautifulSoup(response.text, 'html.parser')
+
+    for book in soup.find_all('article', class_='product_pod'):
+        title = book.h3.a['title']
+        price = book.find('p', class_='price_color').text.strip()
+        availability = book.find('p', class_='instock availability').text.strip()
+        star_rating = book.p['class'][1]
+
+        books.append([title, price, availability, star_rating])
+
+df_books = pd.DataFrame(books, columns=['Title', 'Price', 'Availability', 'Star Rating'])
+df_books.to_csv("books.csv", index=False)
+print("books.csv saved")
+
+
+# q2
+
+url = "https://www.imdb.com/chart/top/"
+driver = webdriver.Chrome()
+driver.get(url)
+time.sleep(3)
+
+movies = []
+rows = driver.find_elements(By.XPATH, '//tbody[@class="lister-list"]/tr')
+
+for row in rows:
+    rank = row.find_element(By.XPATH, './/td[@class="titleColumn"]').text.split('.')[0]
+    title = row.find_element(By.XPATH, './/td[@class="titleColumn"]/a').text
+    year = row.find_element(By.XPATH, './/td[@class="titleColumn"]/span').text.strip("()")
+    rating = row.find_element(By.XPATH, './/td[@class="ratingColumn imdbRating"]/strong').text
+    movies.append([rank, title, year, rating])
+
+driver.quit()
+
+df_imdb = pd.DataFrame(movies, columns=['Rank', 'Title', 'Year', 'Rating'])
+df_imdb.to_csv("imdb_top250.csv", index=False)
+print("imdb_top250.csv saved")
+
+
+
+# q3
+
+url = "https://www.timeanddate.com/weather/"
+response = requests.get(url)
+soup = BeautifulSoup(response.text, "lxml")
+
+cities_data = []
+table = soup.find("table", class_="zebra")
+
+if table:
+    for row in table.find_all("tr")[1:]:
+        cols = row.find_all("td")
+        if len(cols) >= 3:
+            city = cols[0].text.strip()
+            temp = cols[1].text.strip()
+            condition = cols[2].text.strip()
+            cities_data.append([city, temp, condition])
+
+    df_weather = pd.DataFrame(cities_data, columns=["City", "Temperature", "Condition"])
+    df_weather.to_csv("weather.csv", index=False)
+    print("weather.csv saved with", len(df_weather), "rows")
+else:
+    print("Weather table not found! Verify the table structure and class name.")
